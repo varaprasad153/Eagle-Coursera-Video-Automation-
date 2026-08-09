@@ -1,0 +1,544 @@
+// Coursera Auto Learner - Content Script v4.1.0
+console.log("Coursera Auto Learner v4.1.0 content script loaded");
+
+let settings = {
+    enabled: true,
+    autoPilot: false,
+    autoAdvance: true,
+    playbackSpeed: 16
+};
+
+let isProcessing = false;
+let currentUrl = location.href;
+
+// Load settings from storage
+chrome.storage.local.get(
+    ["enabled", "autoPilot", "autoAdvance", "playbackSpeed"],
+    (data) => {
+        settings.enabled = data.enabled ?? true;
+        settings.autoPilot = data.autoPilot ?? false;
+        settings.autoAdvance = data.autoAdvance ?? true;
+        settings.playbackSpeed = data.playbackSpeed ?? 16;
+        console.log("Settings loaded:", settings);
+        startMonitoring();
+    }
+);
+
+// Listen for messages from popup
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    console.log("Message received:", request);
+
+    if (request.action === "UPDATE_SETTINGS") {
+        settings = { ...settings, ...request };
+        console.log("Settings updated:", settings);
+
+        if (settings.enabled && settings.autoPilot && !isProcessing) {
+            processCurrentItem();
+        }
+
+        sendResponse({ status: "Settings updated" });
+        return true;
+    }
+
+    if (request.action === "SKIP_VIDEO") {
+        const result = completeCurrentItemManual();
+        sendResponse(result);
+        return true;
+    }
+
+    if (request.action === "GET_STATUS") {
+        sendResponse({
+            enabled: settings.enabled,
+            autoPilot: settings.autoPilot
+        });
+        return true;
+    }
+});
+
+// Monitor URL changes (Coursera Single Page App)
+function startMonitoring() {
+    setInterval(() => {
+        if (location.href !== currentUrl) {
+            currentUrl = location.href;
+            isProcessing = false;
+            console.log("Navigation detected to:", currentUrl);
+
+            if (settings.enabled && settings.autoPilot) {
+                setTimeout(processCurrentItem, 1200);
+            }
+        }
+
+        if (settings.enabled) {
+            handleInVideoPrompts();
+        }
+    }, 1000);
+
+    if (settings.enabled && settings.autoPilot) {
+        setTimeout(processCurrentItem, 1200);
+    }
+}
+
+// Helper: Ensure element is NOT inside the left sidebar navigation drawer
+function isInsideSidebar(el) {
+    if (!el) return false;
+    return !!el.closest("nav, aside, .rc-ModuleNav, .rc-TreeNav, [data-testid='course-navigation'], [aria-label*='navigation'], .rc-NavigationDrawer, [role='navigation']");
+}
+
+// Process current lesson item
+function processCurrentItem() {
+    if (!settings.enabled || !settings.autoPilot || isProcessing) {
+        return;
+    }
+
+    isProcessing = true;
+
+    // 1. VIDEO PRIORITY: If video is present, complete video!
+    const video = document.querySelector("video");
+    if (video) {
+        completeVideoItem(video);
+        return;
+    }
+
+    // 2. READING PRIORITY: If reading is present, complete reading!
+    const reading = findReadingElement();
+    if (reading) {
+        completeReadingItem(reading);
+        return;
+    }
+
+    // 3. AUDIO PRIORITY: If audio is present, complete audio!
+    const audio = document.querySelector("audio");
+    if (audio) {
+        completeAudioItem(audio);
+        return;
+    }
+
+    // 4. ASSIGNMENT / DISCUSSION SKIP: Only if NO video, reading, or audio is present!
+    if (isSkipOrDiscussionPage()) {
+        console.log("Graded assignment, homework, quiz, or discussion detected (no video/reading). Auto advancing...");
+        skipAssessmentOrDiscussion();
+        return;
+    }
+
+    // 5. Fallback: Check Mark Complete button in main content area
+    const markBtn = findMarkCompleteButton();
+    if (markBtn) {
+        markBtn.click();
+        console.log("Clicked Mark Complete button");
+        setTimeout(() => {
+            isProcessing = false;
+            if (settings.autoAdvance) clickNextButton();
+        }, 1500);
+        return;
+    }
+
+    // 6. Fallback: Check Next button, Next Module button, or Sidebar Next Link
+    if (clickNextButton()) {
+        return;
+    }
+
+    isProcessing = false;
+}
+
+// 1. VIDEO HANDLING
+function completeVideoItem(video) {
+    console.log("Video item detected. Waiting for stream load...");
+
+    let loadAttempts = 0;
+    const checkVideoReady = setInterval(() => {
+        loadAttempts++;
+
+        if (video.duration > 0 && !isNaN(video.duration) && video.readyState >= 2) {
+            clearInterval(checkVideoReady);
+
+            console.log(`Video loaded. Duration: ${video.duration}s. Seeking to last 2s...`);
+
+            video.muted = true;
+            try {
+                video.playbackRate = Math.min(Number(settings.playbackSpeed) || 16, 16);
+            } catch (e) {}
+
+            // Set playhead to 2 seconds before end
+            const targetTime = Math.max(0, video.duration - 2);
+            video.currentTime = targetTime;
+            
+            video.play().catch(e => console.log("Play error:", e));
+
+            let finished = false;
+            const onEnded = () => {
+                if (finished) return;
+                finished = true;
+                console.log("Video finished playing to end.");
+
+                const markBtn = findMarkCompleteButton();
+                if (markBtn) markBtn.click();
+
+                setTimeout(() => {
+                    isProcessing = false;
+                    if (settings.autoAdvance) {
+                        console.log("Moving to next lesson...");
+                        clickNextButton();
+                    }
+                }, 1500);
+            };
+
+            video.addEventListener("ended", onEnded, { once: true });
+
+            // Fallback timer if ended event does not trigger
+            setTimeout(() => {
+                if (!finished) {
+                    onEnded();
+                }
+            }, 3500);
+
+        } else if (loadAttempts >= 20) {
+            clearInterval(checkVideoReady);
+            console.log("Video load timeout. Retrying...");
+            isProcessing = false;
+        }
+    }, 500);
+}
+
+// 2. READING HANDLING
+function findReadingElement() {
+    const selectors = [".rc-Reading", ".reading-body", ".reading-content", "[data-testid*='reading']", ".cml-article"];
+    for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el && el.innerText && el.innerText.length > 30 && !isInsideSidebar(el)) return el;
+    }
+    return null;
+}
+
+function completeReadingItem(reading) {
+    console.log("Reading item detected. Scroll & Mark Complete...");
+
+    try {
+        if (reading.scrollHeight > reading.clientHeight) {
+            reading.scrollTop = reading.scrollHeight;
+        }
+        window.scrollTo(0, document.body.scrollHeight);
+    } catch (e) {}
+
+    setTimeout(() => {
+        const markBtn = findMarkCompleteButton();
+        if (markBtn) markBtn.click();
+
+        document.querySelectorAll(".rc-ReadingCompletion button, [data-testid*='mark-complete']")
+            .forEach(btn => { if (!btn.disabled && !isInsideSidebar(btn)) btn.click(); });
+
+        setTimeout(() => {
+            isProcessing = false;
+            if (settings.autoAdvance) {
+                clickNextButton();
+            }
+        }, 1500);
+    }, 1200);
+}
+
+// 3. AUDIO HANDLING
+function completeAudioItem(audio) {
+    console.log("Audio item detected. Seeking to last 2s...");
+
+    let loadAttempts = 0;
+    const checkAudioReady = setInterval(() => {
+        loadAttempts++;
+
+        if (audio.duration > 0 && !isNaN(audio.duration) && audio.readyState >= 2) {
+            clearInterval(checkAudioReady);
+
+            audio.muted = true;
+            audio.currentTime = Math.max(0, audio.duration - 2);
+            audio.play().catch(e => {});
+
+            let finished = false;
+            const onEnded = () => {
+                if (finished) return;
+                finished = true;
+                console.log("Audio finished.");
+
+                const markBtn = findMarkCompleteButton();
+                if (markBtn) markBtn.click();
+
+                setTimeout(() => {
+                    isProcessing = false;
+                    if (settings.autoAdvance) clickNextButton();
+                }, 1500);
+            };
+
+            audio.addEventListener("ended", onEnded, { once: true });
+            setTimeout(onEnded, 3500);
+
+        } else if (loadAttempts >= 15) {
+            clearInterval(checkAudioReady);
+            isProcessing = false;
+        }
+    }, 500);
+}
+
+// MANUAL SKIP BUTTON HANDLER
+function completeCurrentItemManual() {
+    const video = document.querySelector("video");
+    if (video) {
+        completeVideoItem(video);
+        return { success: true, status: "Video completing & advancing..." };
+    }
+
+    const reading = findReadingElement();
+    if (reading) {
+        completeReadingItem(reading);
+        return { success: true, status: "Reading marked complete & advancing..." };
+    }
+
+    const audio = document.querySelector("audio");
+    if (audio) {
+        completeAudioItem(audio);
+        return { success: true, status: "Audio completing & advancing..." };
+    }
+
+    if (isSkipOrDiscussionPage()) {
+        skipAssessmentOrDiscussion();
+        return { success: true, status: "Skipped assignment/discussion" };
+    }
+
+    const markBtn = findMarkCompleteButton();
+    if (markBtn) {
+        markBtn.click();
+        setTimeout(() => { if (settings.autoAdvance) clickNextButton(); }, 1200);
+        return { success: true, status: "Marked complete" };
+    }
+
+    if (clickNextButton()) {
+        return { success: true, status: "Moving to Next Item / Module..." };
+    }
+
+    return { success: false, status: "No content found on page" };
+}
+
+// HELPERS & BUTTON FINDERS (STRICTLY EXCLUDING SIDEBAR)
+function findMarkCompleteButton() {
+    const selectors = [
+        "button[aria-label*='Mark as complete']",
+        "button[aria-label*='Mark complete']",
+        "button[data-testid*='mark-complete']",
+        ".rc-ReadingCompletion button",
+        ".rc-VideoCompletion button"
+    ];
+    for (const s of selectors) {
+        const elements = document.querySelectorAll(s);
+        for (const el of elements) {
+            if (el && !el.disabled && !isInsideSidebar(el)) return el;
+        }
+    }
+
+    const btns = document.querySelectorAll("button, a, div[role='button']");
+    for (const btn of btns) {
+        if (isInsideSidebar(btn)) continue;
+        const text = (btn.innerText || btn.getAttribute("aria-label") || "").toLowerCase().trim();
+        if (text.includes("mark as complete") || text.includes("mark complete")) {
+            if (!btn.disabled) return btn;
+        }
+    }
+    return null;
+}
+
+// FIND MAIN CONTENT "GO TO NEXT ITEM" OR NEXT BUTTON
+function findNextButton() {
+    const selectors = [
+        "[data-testid='next-item-button']",
+        "button[aria-label*='Go to next item']",
+        "a[aria-label*='Go to next item']",
+        "button[aria-label*='Next item']",
+        "a[aria-label*='Next item']",
+        "button[aria-label*='next item']",
+        "a[aria-label*='next item']",
+        "button[data-testid*='next']",
+        "a[data-testid*='next']",
+        ".rc-ItemNav button",
+        "button[aria-label='Next']",
+        "a[aria-label='Next']",
+        "a.next-item-btn"
+    ];
+    for (const sel of selectors) {
+        const elements = document.querySelectorAll(sel);
+        for (const el of elements) {
+            if (el && !el.disabled && !isInsideSidebar(el)) return el;
+        }
+    }
+
+    const btns = document.querySelectorAll("button, a, div[role='button']");
+    const keywords = [
+        "go to next item", "next item", "next lesson", "go to next",
+        "next", "continue", "skip", "go to next module"
+    ];
+
+    for (const btn of btns) {
+        if (isInsideSidebar(btn)) continue;
+        const text = (btn.innerText || btn.getAttribute("aria-label") || "").toLowerCase().trim();
+        for (const kw of keywords) {
+            if (text.includes(kw)) {
+                if (!btn.disabled) return btn;
+            }
+        }
+    }
+    return null;
+}
+
+// FIND NEXT MODULE / WEEK BUTTON
+function findNextModuleButton() {
+    const selectors = [
+        "[data-testid='next-module-button']",
+        "[data-testid='next-week-button']",
+        ".rc-NextModuleButton",
+        ".rc-NextWeekButton"
+    ];
+    for (const sel of selectors) {
+        const elements = document.querySelectorAll(sel);
+        for (const el of elements) {
+            if (el && !el.disabled && !isInsideSidebar(el)) return el;
+        }
+    }
+
+    const elements = document.querySelectorAll("button, a, div[role='button']");
+    const keywords = [
+        "next module", "next week", "go to next module", "go to next week",
+        "continue to next module", "continue to next week", "start next week",
+        "start next module"
+    ];
+
+    for (const el of elements) {
+        if (isInsideSidebar(el)) continue;
+        const text = (el.innerText || el.getAttribute("aria-label") || "").toLowerCase().trim();
+        for (const kw of keywords) {
+            if (text.includes(kw)) {
+                if (!el.disabled) return el;
+            }
+        }
+    }
+    return null;
+}
+
+// FALLBACK: ADVANCE BY CLICKING THE NEXT ITEM LINK IN THE SIDEBAR NAV
+function clickNextItemFromSidebar() {
+    const sidebar = document.querySelector("nav, aside, .rc-ModuleNav, .rc-TreeNav, [data-testid='course-navigation'], [aria-label*='navigation']");
+    if (!sidebar) return false;
+
+    const allLinks = Array.from(sidebar.querySelectorAll("a[href*='/item/'], a[href*='/lecture/'], a[href*='/discussion/'], a[href*='/assignment/'], a[href*='/quiz/'], a.rc-Option"));
+    if (allLinks.length === 0) return false;
+
+    let activeIdx = -1;
+    for (let i = 0; i < allLinks.length; i++) {
+        const link = allLinks[i];
+        if (link.getAttribute("aria-current") === "page" || link.classList.contains("active") || link.classList.contains("rc-Option--active") || link.href === location.href) {
+            activeIdx = i;
+            break;
+        }
+    }
+
+    if (activeIdx !== -1 && activeIdx + 1 < allLinks.length) {
+        const nextLink = allLinks[activeIdx + 1];
+        console.log("Advancing via sidebar next item link:", nextLink.innerText || nextLink.href);
+        nextLink.click();
+        return true;
+    }
+
+    return false;
+}
+
+function clickNextButton() {
+    // 1. Try Main Next button
+    let btn = findNextButton();
+
+    // 2. Try Next Module / Week button
+    if (!btn) {
+        btn = findNextModuleButton();
+    }
+
+    if (btn && !btn.disabled) {
+        console.log("Clicked Next / Module button:", btn.innerText || btn.getAttribute("aria-label"));
+        btn.click();
+        setTimeout(() => { isProcessing = false; }, 2000);
+        return true;
+    }
+
+    // 3. Fallback: Click next item directly in left sidebar drawer
+    console.log("Main Next button not found. Trying sidebar next item link...");
+    if (clickNextItemFromSidebar()) {
+        setTimeout(() => { isProcessing = false; }, 2000);
+        return true;
+    }
+
+    console.log("No next button or sidebar link found.");
+    isProcessing = false;
+    return false;
+}
+
+// DETECT ASSESSMENTS, HOMEWORK, GRADED ASSIGNMENTS, PLUGINS & DISCUSSION PROMPTS
+function isSkipOrDiscussionPage() {
+    const url = location.href.toLowerCase();
+    const patterns = [
+        "/quiz/", "/exam/", "/assignment/", "/homework/", "/submit", "/peer-review/",
+        "/peer/", "/assessment/", "/discussionprompt/", "/discussions/",
+        "/discussion/", "/forum/", "/graded-quiz/", "/practice-quiz/",
+        "/ungradedplugin/", "/plugin/"
+    ];
+    for (const p of patterns) if (url.includes(p)) return true;
+
+    const mainContent = document.querySelector(".rc-ItemContent, #rendered-content, .rc-ItemPage, main") || document.body;
+    const selectors = [
+        ".rc-DiscussionPrompt",
+        ".rc-Assignment",
+        ".rc-Assessment",
+        "[data-testid*='discussion']",
+        "[data-testid*='assignment']",
+        "[data-testid*='quiz']",
+        "[data-testid*='peer']"
+    ];
+    for (const s of selectors) {
+        const el = mainContent.querySelector(s);
+        if (el && !isInsideSidebar(el)) return true;
+    }
+
+    return false;
+}
+
+function skipAssessmentOrDiscussion() {
+    const markBtn = findMarkCompleteButton();
+    if (markBtn) {
+        try { markBtn.click(); } catch(e) {}
+    }
+
+    setTimeout(() => {
+        if (clickNextButton()) {
+            console.log("Successfully advanced past skip page.");
+            return;
+        }
+
+        const btns = document.querySelectorAll("button, a, div[role='button']");
+        for (const b of btns) {
+            if (isInsideSidebar(b)) continue;
+            const txt = (b.innerText || b.getAttribute("aria-label") || "").toLowerCase();
+            if (txt.includes("go to next") || txt.includes("next item") || txt.includes("skip") || txt.includes("continue")) {
+                if (!b.disabled) {
+                    console.log("Clicking fallback skip button:", txt);
+                    b.click();
+                    break;
+                }
+            }
+        }
+
+        setTimeout(() => { isProcessing = false; }, 2000);
+    }, 800);
+}
+
+function handleInVideoPrompts() {
+    const promptSelectors = [".rc-VideoQuizModal", "[data-testid='in-video-quiz-modal']", ".rc-InVideoQuiz"];
+    for (const sel of promptSelectors) {
+        if (document.querySelector(sel)) {
+            const btn = document.querySelector(`${sel} button`);
+            if (btn && !btn.disabled && !isInsideSidebar(btn)) {
+                btn.click();
+                console.log("Dismissed in-video prompt");
+            }
+        }
+    }
+}

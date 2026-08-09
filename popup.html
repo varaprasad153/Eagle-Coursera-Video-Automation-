@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Coursera Auto Learner</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            width: 320px;
+            padding: 16px;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #0f172a;
+            color: #f8fafc;
+            user-select: none;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 14px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        h2 {
+            font-size: 16px;
+            color: #60a5fa;
+        }
+
+        .badge {
+            font-size: 10px;
+            background: rgba(59, 130, 246, 0.2);
+            color: #60a5fa;
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+
+        .row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 12px 0;
+            font-size: 13px;
+        }
+
+        label {
+            cursor: pointer;
+        }
+
+        input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+            accent-color: #3b82f6;
+        }
+
+        button {
+            width: 100%;
+            padding: 10px;
+            margin-top: 12px;
+            cursor: pointer;
+            background: #3b82f6;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 13px;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #2563eb;
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            margin-top: 6px;
+            accent-color: #3b82f6;
+        }
+
+        #status {
+            margin-top: 14px;
+            padding: 8px;
+            background: #1e293b;
+            border-radius: 6px;
+            font-size: 12px;
+            color: #94a3b8;
+            text-align: center;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="header">
+        <h2>⚡ Coursera Auto Learner</h2>
+        <span class="badge">v3.6</span>
+    </div>
+
+    <div class="row">
+        <label for="enabled">Enable Extension</label>
+        <input type="checkbox" id="enabled" checked>
+    </div>
+
+    <div class="row">
+        <label for="autoPilot">Auto Pilot (Auto Mode)</label>
+        <input type="checkbox" id="autoPilot">
+    </div>
+
+    <div class="row">
+        <label for="autoAdvance">Auto Move Next Lesson</label>
+        <input type="checkbox" id="autoAdvance" checked>
+    </div>
+
+    <div style="margin-top: 14px;">
+        <label style="font-size: 13px;">
+            Playback Speed:
+            <strong style="color: #60a5fa;">
+                <span id="speedValue">16</span>x
+            </strong>
+        </label>
+        <input type="range" id="speed" min="1" max="16" step="0.5" value="16">
+    </div>
+
+    <button id="skipVideo">
+        ⏭ Skip / Complete Current Item
+    </button>
+
+    <div id="status">
+        Ready
+    </div>
+
+    <script src="popup.js"></script>
+
+</body>
+
+</html>
