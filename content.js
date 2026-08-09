@@ -1,33 +1,14 @@
-// Coursera Auto Learner - Content Script v4.4.0 (Mount Wait & Zero Skip Protection)
-console.log("⚡ Coursera Auto Learner v4.4.0 active with React Mount Wait & Zero Skip Protection");
+// Coursera Auto Learner - Content Script v5.0.0 (Rock Solid Locked Pipeline)
+console.log("⚡ Coursera Auto Learner v5.0.0 active");
 
-// ----------------------------------------------------
-// PREVENT BACKGROUND TAB PAUSING & VISIBILITY THROTTLING
-// ----------------------------------------------------
+// Overrides Page Visibility API so Coursera player believes window is ALWAYS visible
 try {
-    Object.defineProperty(document, 'hidden', {
-        get: function () { return false; },
-        configurable: true
-    });
-    Object.defineProperty(document, 'visibilityState', {
-        get: function () { return 'visible'; },
-        configurable: true
-    });
-
-    window.addEventListener('visibilitychange', function (e) {
-        e.stopImmediatePropagation();
-    }, true);
-
-    document.addEventListener('visibilitychange', function (e) {
-        e.stopImmediatePropagation();
-    }, true);
-
-    window.addEventListener('blur', function (e) {
-        e.stopImmediatePropagation();
-    }, true);
-} catch (e) {
-    console.warn("Visibility override warning:", e);
-}
+    Object.defineProperty(document, 'hidden', { get: function () { return false; }, configurable: true });
+    Object.defineProperty(document, 'visibilityState', { get: function () { return 'visible'; }, configurable: true });
+    window.addEventListener('visibilitychange', (e) => e.stopImmediatePropagation(), true);
+    document.addEventListener('visibilitychange', (e) => e.stopImmediatePropagation(), true);
+    window.addEventListener('blur', (e) => e.stopImmediatePropagation(), true);
+} catch (e) {}
 
 let settings = {
     enabled: true,
@@ -52,7 +33,7 @@ chrome.storage.local.get(
     }
 );
 
-// Listen for messages from popup & background service worker
+// Listen for messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "UPDATE_SETTINGS") {
         settings = { ...settings, ...request };
@@ -62,14 +43,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             processCurrentItem();
         }
         sendResponse({ status: "Settings updated" });
-        return true;
-    }
-
-    if (request.action === "BACKGROUND_PING") {
-        if (settings.enabled && settings.autoPilot && !isProcessing) {
-            processCurrentItem();
-        }
-        sendResponse({ status: "Background ping acknowledged" });
         return true;
     }
 
@@ -88,16 +61,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 });
 
-// Monitor URL changes (Coursera Single Page App) & Keep Background Loop Alive
+// Monitor URL changes (Coursera Single Page App)
 function startMonitoring() {
     setInterval(() => {
+        // Detect page URL navigation
         if (location.href !== currentUrl) {
             currentUrl = location.href;
-            isProcessing = false;
+            isProcessing = false; // Unlock processing ONLY when page URL changes
             console.log("Navigation detected to:", currentUrl);
 
             if (settings.enabled && settings.autoPilot) {
-                setTimeout(processCurrentItem, 1000);
+                setTimeout(processCurrentItem, 1500);
+            }
+        } else {
+            // Trigger processing if enabled and not currently processing
+            if (settings.enabled && settings.autoPilot && !isProcessing) {
+                processCurrentItem();
             }
         }
 
@@ -105,10 +84,6 @@ function startMonitoring() {
             handleInVideoPrompts();
         }
     }, 1000);
-
-    if (settings.enabled && settings.autoPilot) {
-        setTimeout(processCurrentItem, 1000);
-    }
 }
 
 // Helper: Ensure element is NOT inside the left sidebar navigation drawer
@@ -117,131 +92,107 @@ function isInsideSidebar(el) {
     return !!el.closest("nav, aside, .rc-ModuleNav, .rc-TreeNav, [data-testid='course-navigation'], [aria-label*='navigation'], .rc-NavigationDrawer, [role='navigation']");
 }
 
-// Process current lesson item with REACT MOUNT WAIT PROTECTION
+// Main execution function
 function processCurrentItem() {
     if (!settings.enabled || !settings.autoPilot || isProcessing) {
         return;
     }
 
-    isProcessing = true;
-    console.log("Analyzing page, waiting for React elements to mount...");
+    isProcessing = true; // Lock processing until URL navigation completes
+    console.log("Processing page:", location.href);
 
     let attempts = 0;
-    const maxAttempts = 12; // Wait up to 6 seconds for video/reading elements to mount in DOM
+    const maxAttempts = 10; // Poll for up to 5 seconds for React components to mount
 
-    const checkMount = setInterval(() => {
+    const mountChecker = setInterval(() => {
         attempts++;
 
-        // 1. Check Video
+        // 1. VIDEO ITEM: If <video> element exists, process video!
         const video = document.querySelector("video");
         if (video) {
-            clearInterval(checkMount);
-            console.log("Auto Learner: Video element mounted! Processing video...");
+            clearInterval(mountChecker);
+            console.log("Video detected! Starting video completion...");
             completeVideoItem(video);
             return;
         }
 
-        // 2. Check Reading
+        // 2. READING ITEM: If reading container exists, process reading!
         const reading = findReadingElement();
         if (reading) {
-            clearInterval(checkMount);
-            console.log("Auto Learner: Reading element mounted! Processing reading...");
+            clearInterval(mountChecker);
+            console.log("Reading detected! Starting reading completion...");
             completeReadingItem(reading);
             return;
         }
 
-        // 3. Check Audio
+        // 3. AUDIO ITEM: If <audio> element exists, process audio!
         const audio = document.querySelector("audio");
         if (audio) {
-            clearInterval(checkMount);
-            console.log("Auto Learner: Audio element mounted! Processing audio...");
+            clearInterval(mountChecker);
+            console.log("Audio detected! Starting audio completion...");
             completeAudioItem(audio);
             return;
         }
 
-        // 4. Check Explicit Skip Pages (Discussion Prompts, Peer Reviews, Plugins)
+        // 4. DISCUSSION / PLUGIN ITEM: If explicit discussion/plugin page, skip!
         if (isExplicitSkipPage()) {
-            clearInterval(checkMount);
-            console.log("Auto Learner: Discussion/plugin page confirmed. Skipping...");
+            clearInterval(mountChecker);
+            console.log("Discussion/Plugin page detected. Skipping...");
             skipAssessmentOrDiscussion();
             return;
         }
 
-        // If after 6 seconds no video/reading mounted, check fallback buttons
+        // 5. TIMEOUT FALLBACK (5s): If no video/reading mounted after 5s
         if (attempts >= maxAttempts) {
-            clearInterval(checkMount);
-            console.log("Auto Learner: No video/reading mounted after 6s timeout. Checking buttons...");
+            clearInterval(mountChecker);
+            console.log("No media mounted after 5s timeout. Attempting navigation...");
 
             const markBtn = findMarkCompleteButton();
             if (markBtn) {
                 markBtn.click();
-                console.log("Clicked Mark Complete button");
                 setTimeout(() => {
-                    isProcessing = false;
                     if (settings.autoAdvance) clickNextButton();
-                }, 1200);
+                }, 1500);
                 return;
             }
 
-            if (clickNextButton()) {
-                return;
-            }
-
-            isProcessing = false;
+            clickNextButton();
         }
     }, 500);
 }
 
-// 1. VIDEO HANDLING WITH BACKGROUND TAB UNPAUSE & COMPLETION
+// 1. VIDEO COMPLETION PIPELINE
 function completeVideoItem(video) {
-    console.log("Video item detected. Waiting for stream load...");
-
     let loadAttempts = 0;
-    const checkVideoReady = setInterval(() => {
+    const checkReady = setInterval(() => {
         loadAttempts++;
 
         if (video.duration > 0 && !isNaN(video.duration) && video.readyState >= 2) {
-            clearInterval(checkVideoReady);
+            clearInterval(checkReady);
 
-            console.log(`Video loaded. Duration: ${video.duration}s. Seeking to last 2s...`);
+            console.log(`Video ready (${video.duration}s). Seeking to last 2 seconds...`);
 
             video.muted = true;
             try {
                 video.playbackRate = Math.min(Number(settings.playbackSpeed) || 16, 16);
             } catch (e) {}
 
-            // Set playhead to 2 seconds before end
-            const targetTime = Math.max(0, video.duration - 2);
-            video.currentTime = targetTime;
-            
-            video.play().catch(e => console.log("Play error:", e));
-
-            // Background Tab Enforcer: Unpause video if browser tries to pause it in background
-            const bgKeepAlive = setInterval(() => {
-                if (video && !video.ended && video.currentTime < video.duration - 0.5) {
-                    video.muted = true;
-                    if (video.paused) {
-                        video.play().catch(e => {});
-                    }
-                } else {
-                    clearInterval(bgKeepAlive);
-                }
-            }, 500);
+            // Fast-forward playhead to 2 seconds before end
+            video.currentTime = Math.max(0, video.duration - 2);
+            video.play().catch(e => {});
 
             let finished = false;
             const onEnded = () => {
                 if (finished) return;
                 finished = true;
-                clearInterval(bgKeepAlive);
                 console.log("Video finished playing to end.");
 
                 const markBtn = findMarkCompleteButton();
                 if (markBtn) markBtn.click();
 
                 setTimeout(() => {
-                    isProcessing = false;
                     if (settings.autoAdvance) {
-                        console.log("Moving to next lesson...");
+                        console.log("Advancing to next item...");
                         clickNextButton();
                     }
                 }, 1200);
@@ -249,22 +200,20 @@ function completeVideoItem(video) {
 
             video.addEventListener("ended", onEnded, { once: true });
 
-            // Fallback timer if ended event does not trigger
+            // Fallback safety timer if ended event does not fire
             setTimeout(() => {
-                if (!finished) {
-                    onEnded();
-                }
+                if (!finished) onEnded();
             }, 3500);
 
         } else if (loadAttempts >= 20) {
-            clearInterval(checkVideoReady);
+            clearInterval(checkReady);
             console.log("Video load timeout. Retrying...");
             isProcessing = false;
         }
     }, 500);
 }
 
-// 2. READING HANDLING
+// 2. READING COMPLETION PIPELINE
 function findReadingElement() {
     const selectors = [".rc-Reading", ".reading-body", ".reading-content", "[data-testid*='reading']", ".cml-article"];
     for (const sel of selectors) {
@@ -292,7 +241,6 @@ function completeReadingItem(reading) {
             .forEach(btn => { if (!btn.disabled && !isInsideSidebar(btn)) btn.click(); });
 
         setTimeout(() => {
-            isProcessing = false;
             if (settings.autoAdvance) {
                 clickNextButton();
             }
@@ -300,42 +248,29 @@ function completeReadingItem(reading) {
     }, 1000);
 }
 
-// 3. AUDIO HANDLING WITH BACKGROUND TAB UNPAUSE
+// 3. AUDIO COMPLETION PIPELINE
 function completeAudioItem(audio) {
-    console.log("Audio item detected. Seeking to last 2s...");
-
     let loadAttempts = 0;
-    const checkAudioReady = setInterval(() => {
+    const checkReady = setInterval(() => {
         loadAttempts++;
 
         if (audio.duration > 0 && !isNaN(audio.duration) && audio.readyState >= 2) {
-            clearInterval(checkAudioReady);
+            clearInterval(checkReady);
 
             audio.muted = true;
             audio.currentTime = Math.max(0, audio.duration - 2);
             audio.play().catch(e => {});
 
-            const bgKeepAlive = setInterval(() => {
-                if (audio && !audio.ended && audio.currentTime < audio.duration - 0.5) {
-                    audio.muted = true;
-                    if (audio.paused) audio.play().catch(e => {});
-                } else {
-                    clearInterval(bgKeepAlive);
-                }
-            }, 500);
-
             let finished = false;
             const onEnded = () => {
                 if (finished) return;
                 finished = true;
-                clearInterval(bgKeepAlive);
                 console.log("Audio finished.");
 
                 const markBtn = findMarkCompleteButton();
                 if (markBtn) markBtn.click();
 
                 setTimeout(() => {
-                    isProcessing = false;
                     if (settings.autoAdvance) clickNextButton();
                 }, 1200);
             };
@@ -344,7 +279,7 @@ function completeAudioItem(audio) {
             setTimeout(onEnded, 3500);
 
         } else if (loadAttempts >= 15) {
-            clearInterval(checkAudioReady);
+            clearInterval(checkReady);
             isProcessing = false;
         }
     }, 500);
@@ -389,7 +324,7 @@ function completeCurrentItemManual() {
     return { success: false, status: "No content found on page" };
 }
 
-// HELPERS & BUTTON FINDERS (STRICTLY EXCLUDING SIDEBAR)
+// HELPERS & BUTTON FINDERS
 function findMarkCompleteButton() {
     const selectors = [
         "button[aria-label*='Mark as complete']",
@@ -416,7 +351,6 @@ function findMarkCompleteButton() {
     return null;
 }
 
-// FIND MAIN CONTENT "GO TO NEXT ITEM" OR NEXT BUTTON
 function findNextButton() {
     const selectors = [
         "[data-testid='next-item-button']",
@@ -458,7 +392,6 @@ function findNextButton() {
     return null;
 }
 
-// FIND NEXT MODULE / WEEK BUTTON
 function findNextModuleButton() {
     const selectors = [
         "[data-testid='next-module-button']",
@@ -492,7 +425,6 @@ function findNextModuleButton() {
     return null;
 }
 
-// FALLBACK: ADVANCE BY CLICKING THE NEXT ITEM LINK IN THE SIDEBAR NAV
 function clickNextItemFromSidebar() {
     const sidebar = document.querySelector("nav, aside, .rc-ModuleNav, .rc-TreeNav, [data-testid='course-navigation'], [aria-label*='navigation']");
     if (!sidebar) return false;
@@ -520,34 +452,24 @@ function clickNextItemFromSidebar() {
 }
 
 function clickNextButton() {
-    // 1. Try Main Next button
     let btn = findNextButton();
-
-    // 2. Try Next Module / Week button
-    if (!btn) {
-        btn = findNextModuleButton();
-    }
+    if (!btn) btn = findNextModuleButton();
 
     if (btn && !btn.disabled) {
-        console.log("Clicked Next / Module button:", btn.innerText || btn.getAttribute("aria-label"));
+        console.log("Clicked Next button:", btn.innerText || btn.getAttribute("aria-label"));
         btn.click();
-        setTimeout(() => { isProcessing = false; }, 1500);
         return true;
     }
 
-    // 3. Fallback: Click next item directly in left sidebar drawer
     console.log("Main Next button not found. Trying sidebar next item link...");
     if (clickNextItemFromSidebar()) {
-        setTimeout(() => { isProcessing = false; }, 1500);
         return true;
     }
 
     console.log("No next button or sidebar link found.");
-    isProcessing = false;
     return false;
 }
 
-// DETECT EXPLICIT NON-MEDIA PAGES (DISCUSSION PROMPTS, PEER REVIEWS, UNGRADED PLUGINS)
 function isExplicitSkipPage() {
     const path = location.pathname.toLowerCase();
     const skipPaths = [
@@ -580,10 +502,7 @@ function skipAssessmentOrDiscussion() {
     }
 
     setTimeout(() => {
-        if (clickNextButton()) {
-            console.log("Successfully advanced past skip page.");
-            return;
-        }
+        if (clickNextButton()) return;
 
         const btns = document.querySelectorAll("button, a, div[role='button']");
         for (const b of btns) {
@@ -591,14 +510,11 @@ function skipAssessmentOrDiscussion() {
             const txt = (b.innerText || b.getAttribute("aria-label") || "").toLowerCase();
             if (txt.includes("go to next") || txt.includes("next item") || txt.includes("skip") || txt.includes("continue")) {
                 if (!b.disabled) {
-                    console.log("Clicking fallback skip button:", txt);
                     b.click();
                     break;
                 }
             }
         }
-
-        setTimeout(() => { isProcessing = false; }, 1500);
     }, 600);
 }
 
