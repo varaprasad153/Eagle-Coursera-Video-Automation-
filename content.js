@@ -1,5 +1,34 @@
-// Coursera Auto Learner - Content Script v4.1.0
-console.log("Coursera Auto Learner v4.1.0 content script loaded");
+// Coursera Auto Learner - Content Script v4.2.0 (Background Enabled)
+console.log("⚡ Coursera Auto Learner v4.2.0 active with Background Tab Support");
+
+// ----------------------------------------------------
+// PREVENT BACKGROUND TAB PAUSING & VISIBILITY THROTTLING
+// Overrides Page Visibility API so Coursera player believes window is ALWAYS visible
+// ----------------------------------------------------
+try {
+    Object.defineProperty(document, 'hidden', {
+        get: function () { return false; },
+        configurable: true
+    });
+    Object.defineProperty(document, 'visibilityState', {
+        get: function () { return 'visible'; },
+        configurable: true
+    });
+
+    window.addEventListener('visibilitychange', function (e) {
+        e.stopImmediatePropagation();
+    }, true);
+
+    document.addEventListener('visibilitychange', function (e) {
+        e.stopImmediatePropagation();
+    }, true);
+
+    window.addEventListener('blur', function (e) {
+        e.stopImmediatePropagation();
+    }, true);
+} catch (e) {
+    console.warn("Visibility override warning:", e);
+}
 
 let settings = {
     enabled: true,
@@ -24,10 +53,8 @@ chrome.storage.local.get(
     }
 );
 
-// Listen for messages from popup
+// Listen for messages from popup & background service worker
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    console.log("Message received:", request);
-
     if (request.action === "UPDATE_SETTINGS") {
         settings = { ...settings, ...request };
         console.log("Settings updated:", settings);
@@ -35,8 +62,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (settings.enabled && settings.autoPilot && !isProcessing) {
             processCurrentItem();
         }
-
         sendResponse({ status: "Settings updated" });
+        return true;
+    }
+
+    if (request.action === "BACKGROUND_PING") {
+        if (settings.enabled && settings.autoPilot && !isProcessing) {
+            processCurrentItem();
+        }
+        sendResponse({ status: "Background ping acknowledged" });
         return true;
     }
 
@@ -55,7 +89,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 });
 
-// Monitor URL changes (Coursera Single Page App)
+// Monitor URL changes (Coursera Single Page App) & Keep Background Loop Alive
 function startMonitoring() {
     setInterval(() => {
         if (location.href !== currentUrl) {
@@ -64,7 +98,7 @@ function startMonitoring() {
             console.log("Navigation detected to:", currentUrl);
 
             if (settings.enabled && settings.autoPilot) {
-                setTimeout(processCurrentItem, 1200);
+                setTimeout(processCurrentItem, 1000);
             }
         }
 
@@ -74,7 +108,7 @@ function startMonitoring() {
     }, 1000);
 
     if (settings.enabled && settings.autoPilot) {
-        setTimeout(processCurrentItem, 1200);
+        setTimeout(processCurrentItem, 1000);
     }
 }
 
@@ -128,7 +162,7 @@ function processCurrentItem() {
         setTimeout(() => {
             isProcessing = false;
             if (settings.autoAdvance) clickNextButton();
-        }, 1500);
+        }, 1200);
         return;
     }
 
@@ -140,7 +174,7 @@ function processCurrentItem() {
     isProcessing = false;
 }
 
-// 1. VIDEO HANDLING
+// 1. VIDEO HANDLING WITH BACKGROUND TAB UNPAUSE
 function completeVideoItem(video) {
     console.log("Video item detected. Waiting for stream load...");
 
@@ -164,10 +198,23 @@ function completeVideoItem(video) {
             
             video.play().catch(e => console.log("Play error:", e));
 
+            // Background Tab Enforcer: Unpause video if browser tries to pause it in background
+            const bgKeepAlive = setInterval(() => {
+                if (video && !video.ended && video.currentTime < video.duration - 0.5) {
+                    video.muted = true;
+                    if (video.paused) {
+                        video.play().catch(e => {});
+                    }
+                } else {
+                    clearInterval(bgKeepAlive);
+                }
+            }, 500);
+
             let finished = false;
             const onEnded = () => {
                 if (finished) return;
                 finished = true;
+                clearInterval(bgKeepAlive);
                 console.log("Video finished playing to end.");
 
                 const markBtn = findMarkCompleteButton();
@@ -179,7 +226,7 @@ function completeVideoItem(video) {
                         console.log("Moving to next lesson...");
                         clickNextButton();
                     }
-                }, 1500);
+                }, 1200);
             };
 
             video.addEventListener("ended", onEnded, { once: true });
@@ -231,11 +278,11 @@ function completeReadingItem(reading) {
             if (settings.autoAdvance) {
                 clickNextButton();
             }
-        }, 1500);
-    }, 1200);
+        }, 1200);
+    }, 1000);
 }
 
-// 3. AUDIO HANDLING
+// 3. AUDIO HANDLING WITH BACKGROUND TAB UNPAUSE
 function completeAudioItem(audio) {
     console.log("Audio item detected. Seeking to last 2s...");
 
@@ -250,10 +297,20 @@ function completeAudioItem(audio) {
             audio.currentTime = Math.max(0, audio.duration - 2);
             audio.play().catch(e => {});
 
+            const bgKeepAlive = setInterval(() => {
+                if (audio && !audio.ended && audio.currentTime < audio.duration - 0.5) {
+                    audio.muted = true;
+                    if (audio.paused) audio.play().catch(e => {});
+                } else {
+                    clearInterval(bgKeepAlive);
+                }
+            }, 500);
+
             let finished = false;
             const onEnded = () => {
                 if (finished) return;
                 finished = true;
+                clearInterval(bgKeepAlive);
                 console.log("Audio finished.");
 
                 const markBtn = findMarkCompleteButton();
@@ -262,7 +319,7 @@ function completeAudioItem(audio) {
                 setTimeout(() => {
                     isProcessing = false;
                     if (settings.autoAdvance) clickNextButton();
-                }, 1500);
+                }, 1200);
             };
 
             audio.addEventListener("ended", onEnded, { once: true });
@@ -303,7 +360,7 @@ function completeCurrentItemManual() {
     const markBtn = findMarkCompleteButton();
     if (markBtn) {
         markBtn.click();
-        setTimeout(() => { if (settings.autoAdvance) clickNextButton(); }, 1200);
+        setTimeout(() => { if (settings.autoAdvance) clickNextButton(); }, 1000);
         return { success: true, status: "Marked complete" };
     }
 
@@ -456,14 +513,14 @@ function clickNextButton() {
     if (btn && !btn.disabled) {
         console.log("Clicked Next / Module button:", btn.innerText || btn.getAttribute("aria-label"));
         btn.click();
-        setTimeout(() => { isProcessing = false; }, 2000);
+        setTimeout(() => { isProcessing = false; }, 1500);
         return true;
     }
 
     // 3. Fallback: Click next item directly in left sidebar drawer
     console.log("Main Next button not found. Trying sidebar next item link...");
     if (clickNextItemFromSidebar()) {
-        setTimeout(() => { isProcessing = false; }, 2000);
+        setTimeout(() => { isProcessing = false; }, 1500);
         return true;
     }
 
@@ -526,8 +583,8 @@ function skipAssessmentOrDiscussion() {
             }
         }
 
-        setTimeout(() => { isProcessing = false; }, 2000);
-    }, 800);
+        setTimeout(() => { isProcessing = false; }, 1500);
+    }, 600);
 }
 
 function handleInVideoPrompts() {
