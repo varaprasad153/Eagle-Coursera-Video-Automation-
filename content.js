@@ -1,9 +1,8 @@
-// Coursera Auto Learner - Content Script v4.3.0
-console.log("⚡ Coursera Auto Learner v4.3.0 active with Video Priority & Background Tab Support");
+// Coursera Auto Learner - Content Script v4.4.0 (Mount Wait & Zero Skip Protection)
+console.log("⚡ Coursera Auto Learner v4.4.0 active with React Mount Wait & Zero Skip Protection");
 
 // ----------------------------------------------------
 // PREVENT BACKGROUND TAB PAUSING & VISIBILITY THROTTLING
-// Overrides Page Visibility API so Coursera player believes window is ALWAYS visible
 // ----------------------------------------------------
 try {
     Object.defineProperty(document, 'hidden', {
@@ -118,63 +117,79 @@ function isInsideSidebar(el) {
     return !!el.closest("nav, aside, .rc-ModuleNav, .rc-TreeNav, [data-testid='course-navigation'], [aria-label*='navigation'], .rc-NavigationDrawer, [role='navigation']");
 }
 
-// Process current lesson item
+// Process current lesson item with REACT MOUNT WAIT PROTECTION
 function processCurrentItem() {
     if (!settings.enabled || !settings.autoPilot || isProcessing) {
         return;
     }
 
     isProcessing = true;
+    console.log("Analyzing page, waiting for React elements to mount...");
 
-    // 1. VIDEO PRIORITY: If video is present, ALWAYS complete video!
-    const video = document.querySelector("video");
-    if (video) {
-        console.log("Auto Learner: Video element found! Processing video...");
-        completeVideoItem(video);
-        return;
-    }
+    let attempts = 0;
+    const maxAttempts = 12; // Wait up to 6 seconds for video/reading elements to mount in DOM
 
-    // 2. READING PRIORITY: If reading is present, ALWAYS complete reading!
-    const reading = findReadingElement();
-    if (reading) {
-        console.log("Auto Learner: Reading content found! Processing reading...");
-        completeReadingItem(reading);
-        return;
-    }
+    const checkMount = setInterval(() => {
+        attempts++;
 
-    // 3. AUDIO PRIORITY: If audio is present, ALWAYS complete audio!
-    const audio = document.querySelector("audio");
-    if (audio) {
-        console.log("Auto Learner: Audio element found! Processing audio...");
-        completeAudioItem(audio);
-        return;
-    }
+        // 1. Check Video
+        const video = document.querySelector("video");
+        if (video) {
+            clearInterval(checkMount);
+            console.log("Auto Learner: Video element mounted! Processing video...");
+            completeVideoItem(video);
+            return;
+        }
 
-    // 4. ASSIGNMENT / DISCUSSION SKIP: Only if NO video, reading, or audio is present!
-    if (isSkipOrDiscussionPage()) {
-        console.log("Graded assignment, homework, quiz, or discussion detected (no media found). Auto advancing...");
-        skipAssessmentOrDiscussion();
-        return;
-    }
+        // 2. Check Reading
+        const reading = findReadingElement();
+        if (reading) {
+            clearInterval(checkMount);
+            console.log("Auto Learner: Reading element mounted! Processing reading...");
+            completeReadingItem(reading);
+            return;
+        }
 
-    // 5. Fallback: Check Mark Complete button in main content area
-    const markBtn = findMarkCompleteButton();
-    if (markBtn) {
-        markBtn.click();
-        console.log("Clicked Mark Complete button");
-        setTimeout(() => {
+        // 3. Check Audio
+        const audio = document.querySelector("audio");
+        if (audio) {
+            clearInterval(checkMount);
+            console.log("Auto Learner: Audio element mounted! Processing audio...");
+            completeAudioItem(audio);
+            return;
+        }
+
+        // 4. Check Explicit Skip Pages (Discussion Prompts, Peer Reviews, Plugins)
+        if (isExplicitSkipPage()) {
+            clearInterval(checkMount);
+            console.log("Auto Learner: Discussion/plugin page confirmed. Skipping...");
+            skipAssessmentOrDiscussion();
+            return;
+        }
+
+        // If after 6 seconds no video/reading mounted, check fallback buttons
+        if (attempts >= maxAttempts) {
+            clearInterval(checkMount);
+            console.log("Auto Learner: No video/reading mounted after 6s timeout. Checking buttons...");
+
+            const markBtn = findMarkCompleteButton();
+            if (markBtn) {
+                markBtn.click();
+                console.log("Clicked Mark Complete button");
+                setTimeout(() => {
+                    isProcessing = false;
+                    if (settings.autoAdvance) clickNextButton();
+                }, 1200);
+                return;
+            }
+
+            if (clickNextButton()) {
+                return;
+            }
+
             isProcessing = false;
-            if (settings.autoAdvance) clickNextButton();
-        }, 1200);
-        return;
-    }
-
-    // 6. Fallback: Check Next button, Next Module button, or Sidebar Next Link
-    if (clickNextButton()) {
-        return;
-    }
-
-    isProcessing = false;
+        }
+    }, 500);
 }
 
 // 1. VIDEO HANDLING WITH BACKGROUND TAB UNPAUSE & COMPLETION
@@ -355,7 +370,7 @@ function completeCurrentItemManual() {
         return { success: true, status: "Audio completing & advancing..." };
     }
 
-    if (isSkipOrDiscussionPage()) {
+    if (isExplicitSkipPage()) {
         skipAssessmentOrDiscussion();
         return { success: true, status: "Skipped assignment/discussion" };
     }
@@ -532,13 +547,8 @@ function clickNextButton() {
     return false;
 }
 
-// DETECT ASSESSMENTS, HOMEWORK, GRADED ASSIGNMENTS, PLUGINS & DISCUSSION PROMPTS
-function isSkipOrDiscussionPage() {
-    // NEVER skip if video, audio, or reading is present!
-    if (document.querySelector("video") || document.querySelector("audio") || findReadingElement()) {
-        return false;
-    }
-
+// DETECT EXPLICIT NON-MEDIA PAGES (DISCUSSION PROMPTS, PEER REVIEWS, UNGRADED PLUGINS)
+function isExplicitSkipPage() {
     const path = location.pathname.toLowerCase();
     const skipPaths = [
         "/discussionprompt/", "/discussions/", "/discussion/",
@@ -553,8 +563,7 @@ function isSkipOrDiscussionPage() {
         ".rc-DiscussionPrompt",
         ".rc-Assignment",
         ".rc-Assessment",
-        "[data-testid*='discussion']",
-        "[data-testid*='graded-assignment']"
+        "[data-testid*='discussion']"
     ];
     for (const s of selectors) {
         const el = mainContent.querySelector(s);
