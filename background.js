@@ -1,14 +1,19 @@
-// Coursera Auto Learner - Background Service Worker v4.2.0
+// Coursera Auto Learner - Background Service Worker v4.2.1
 console.log("⚡ Auto Learner background service worker started");
 
-// Keep service worker alive and ping Coursera tabs periodically
-chrome.alarms.create("keepAliveAlarm", { periodInMinutes: 0.5 });
-
-chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === "keepAliveAlarm") {
-        pingCourseraTabs();
+// Create alarm if alarms API is available
+if (chrome.alarms) {
+    try {
+        chrome.alarms.create("keepAliveAlarm", { periodInMinutes: 0.5 });
+        chrome.alarms.onAlarm.addListener((alarm) => {
+            if (alarm.name === "keepAliveAlarm") {
+                pingCourseraTabs();
+            }
+        });
+    } catch (e) {
+        console.warn("Alarms warning:", e);
     }
-});
+}
 
 // Listen for tab URL changes / completion
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -22,11 +27,13 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 function pingCourseraTabs() {
-    chrome.tabs.query({ url: "https://*.coursera.org/*" }, (tabs) => {
-        tabs.forEach((tab) => {
-            if (tab.id) {
-                chrome.tabs.sendMessage(tab.id, { action: "BACKGROUND_PING" }).catch(() => {});
-            }
+    if (chrome.tabs) {
+        chrome.tabs.query({ url: "https://*.coursera.org/*" }, (tabs) => {
+            tabs.forEach((tab) => {
+                if (tab.id) {
+                    chrome.tabs.sendMessage(tab.id, { action: "BACKGROUND_PING" }).catch(() => {});
+                }
+            });
         });
-    });
+    }
 }
