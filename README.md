@@ -1,4 +1,4 @@
-# Coursera Auto Learner Extension
+# Eagle Coursera Video Automation
 
 ⚡ **Coursera Auto Learner** is a feature-rich, lightweight Google Chrome Extension (Manifest V3) designed to automate Coursera course completion.
 
@@ -13,6 +13,7 @@
 - **Auto Module/Week Advancement**: Transitions automatically to the next Week / Module at the end of each module.
 - **Auto Assignment & Discussion Skipper**: Bypasses Graded Assignments, Homework, Discussion Prompts, and Ungraded Plugins.
 - **In-Video Prompt Dismissal**: Dismisses mid-video interactive questions and popups.
+- **Background Execution**: Overrides Page Visibility API to keep automating even when working in other desktop applications.
 - **Sleek Popup UI**: Built with a clean dark theme for easy toggling of Auto-Pilot mode and playback speed.
 
 ---
@@ -21,13 +22,13 @@
 
 1. Clone or download this repository:
    ```bash
-   git clone https://github.com/<your-username>/CourseVideoHelper.git
+   git clone https://github.com/varaprasad153/Eagle-Coursera-Video-Automation-.git
    ```
 2. Open **Google Chrome** (or Edge/Brave/Arc).
 3. Navigate to `chrome://extensions` in your browser address bar.
 4. Turn on **Developer mode** in the top right corner.
 5. Click **Load unpacked**.
-6. Select the `CourseVideoHelper` directory.
+6. Select the extension directory.
 7. Open any course page on [Coursera](https://www.coursera.org) and enable **Auto Pilot** in the extension popup!
 
 ---
@@ -35,8 +36,9 @@
 ## 📁 Repository Structure
 
 ```
-CourseVideoHelper/
+Eagle-Coursera-Video-Automation/
 ├── manifest.json     # Chrome Extension Manifest V3 configuration
+├── background.js     # Background service worker for tab keepalives
 ├── content.js        # Core content script for page automation & DOM manipulation
 ├── popup.html        # Extension popup control panel
 ├── popup.js          # Extension popup script & settings sync
