@@ -1,5 +1,5 @@
-// Coursera Auto Learner - Content Script v4.2.0 (Background Enabled)
-console.log("⚡ Coursera Auto Learner v4.2.0 active with Background Tab Support");
+// Coursera Auto Learner - Content Script v4.3.0
+console.log("⚡ Coursera Auto Learner v4.3.0 active with Video Priority & Background Tab Support");
 
 // ----------------------------------------------------
 // PREVENT BACKGROUND TAB PAUSING & VISIBILITY THROTTLING
@@ -126,30 +126,33 @@ function processCurrentItem() {
 
     isProcessing = true;
 
-    // 1. VIDEO PRIORITY: If video is present, complete video!
+    // 1. VIDEO PRIORITY: If video is present, ALWAYS complete video!
     const video = document.querySelector("video");
     if (video) {
+        console.log("Auto Learner: Video element found! Processing video...");
         completeVideoItem(video);
         return;
     }
 
-    // 2. READING PRIORITY: If reading is present, complete reading!
+    // 2. READING PRIORITY: If reading is present, ALWAYS complete reading!
     const reading = findReadingElement();
     if (reading) {
+        console.log("Auto Learner: Reading content found! Processing reading...");
         completeReadingItem(reading);
         return;
     }
 
-    // 3. AUDIO PRIORITY: If audio is present, complete audio!
+    // 3. AUDIO PRIORITY: If audio is present, ALWAYS complete audio!
     const audio = document.querySelector("audio");
     if (audio) {
+        console.log("Auto Learner: Audio element found! Processing audio...");
         completeAudioItem(audio);
         return;
     }
 
     // 4. ASSIGNMENT / DISCUSSION SKIP: Only if NO video, reading, or audio is present!
     if (isSkipOrDiscussionPage()) {
-        console.log("Graded assignment, homework, quiz, or discussion detected (no video/reading). Auto advancing...");
+        console.log("Graded assignment, homework, quiz, or discussion detected (no media found). Auto advancing...");
         skipAssessmentOrDiscussion();
         return;
     }
@@ -174,7 +177,7 @@ function processCurrentItem() {
     isProcessing = false;
 }
 
-// 1. VIDEO HANDLING WITH BACKGROUND TAB UNPAUSE
+// 1. VIDEO HANDLING WITH BACKGROUND TAB UNPAUSE & COMPLETION
 function completeVideoItem(video) {
     console.log("Video item detected. Waiting for stream load...");
 
@@ -531,14 +534,19 @@ function clickNextButton() {
 
 // DETECT ASSESSMENTS, HOMEWORK, GRADED ASSIGNMENTS, PLUGINS & DISCUSSION PROMPTS
 function isSkipOrDiscussionPage() {
-    const url = location.href.toLowerCase();
-    const patterns = [
-        "/quiz/", "/exam/", "/assignment/", "/homework/", "/submit", "/peer-review/",
-        "/peer/", "/assessment/", "/discussionprompt/", "/discussions/",
-        "/discussion/", "/forum/", "/graded-quiz/", "/practice-quiz/",
-        "/ungradedplugin/", "/plugin/"
+    // NEVER skip if video, audio, or reading is present!
+    if (document.querySelector("video") || document.querySelector("audio") || findReadingElement()) {
+        return false;
+    }
+
+    const path = location.pathname.toLowerCase();
+    const skipPaths = [
+        "/discussionprompt/", "/discussions/", "/discussion/",
+        "/forum/", "/peer-review/", "/ungradedplugin/", "/plugin/"
     ];
-    for (const p of patterns) if (url.includes(p)) return true;
+    for (const p of skipPaths) {
+        if (path.includes(p)) return true;
+    }
 
     const mainContent = document.querySelector(".rc-ItemContent, #rendered-content, .rc-ItemPage, main") || document.body;
     const selectors = [
@@ -546,9 +554,7 @@ function isSkipOrDiscussionPage() {
         ".rc-Assignment",
         ".rc-Assessment",
         "[data-testid*='discussion']",
-        "[data-testid*='assignment']",
-        "[data-testid*='quiz']",
-        "[data-testid*='peer']"
+        "[data-testid*='graded-assignment']"
     ];
     for (const s of selectors) {
         const el = mainContent.querySelector(s);
