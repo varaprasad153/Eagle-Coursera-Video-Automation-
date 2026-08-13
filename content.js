@@ -1,5 +1,5 @@
-// Coursera Auto Learner - Content Script v5.3.0 (Zero False-Skip & Bulletproof Pipeline)
-console.log("⚡ Coursera Auto Learner v5.3.0 active (Zero False-Skip)");
+// Coursera Auto Learner - Content Script v5.4.2 (Video Load Guarantee & Telemetry Pipeline)
+console.log("⚡ Coursera Auto Learner v5.4.2 active");
 
 // Overrides Page Visibility API so Coursera player believes window is ALWAYS visible
 try {
@@ -28,11 +28,11 @@ function setProcessingLock(val) {
         processingWatchdog = null;
     }
     if (val) {
-        // Auto-release lock after 20s as safety watchdog
+        // Auto-release lock after 25s as safety watchdog
         processingWatchdog = setTimeout(() => {
-            console.warn("Processing lock watchdog expired (20s). Releasing lock.");
+            console.warn("Processing lock watchdog expired (25s). Releasing lock.");
             isProcessing = false;
-        }, 20000);
+        }, 25000);
     }
 }
 
@@ -88,7 +88,7 @@ function startMonitoring() {
             console.log("Navigation detected to:", currentUrl);
 
             if (settings.enabled && settings.autoPilot) {
-                setTimeout(processCurrentItem, 300); // Fast 300ms startup delay
+                setTimeout(processCurrentItem, 800); // Smooth 800ms startup delay for Coursera React SPA DOM mount
             }
         } else {
             // Trigger processing if enabled and not currently processing
@@ -132,7 +132,7 @@ function findVideoElement() {
     return null;
 }
 
-// Main execution function
+/// Main execution function
 function processCurrentItem() {
     if (!settings.enabled || !settings.autoPilot || isProcessing) {
         return;
@@ -144,16 +144,15 @@ function processCurrentItem() {
     const path = location.pathname.toLowerCase();
     const isVideoCandidateUrl = path.includes("/lecture/") || path.includes("/item/") || path.includes("/video/") || path.includes("/supplement/");
 
-    // ONLY trigger instant skip on explicit assignment/discussion URL paths (e.g. /discussionprompt/ or /quiz/)
-    // NEVER trigger instant skip on video/lecture/item candidate URLs!
-    if (!isVideoCandidateUrl && isExplicitSkipUrl()) {
-        console.log("Instant skip triggered for explicit assignment/discussion URL...");
+    // Instant skip ONLY for direct non-video assessment URLs (e.g. /quiz/123, /exam/123, /peer-review/123)
+    if (isExplicitSkipUrl() && !path.includes("/lecture/") && !path.includes("/video/")) {
+        console.log("Instant skip triggered for explicit assignment/quiz/discussion URL...");
         skipAssessmentOrDiscussion();
         return;
     }
 
     let attempts = 0;
-    const maxAttempts = 30; // Poll up to 9s (30 * 300ms) for video/reading elements to mount in React
+    const maxAttempts = 25; // Poll up to 8.7s (25 * 350ms) for video/reading elements to mount in React DOM
 
     const mountChecker = setInterval(() => {
         attempts++;
@@ -162,7 +161,7 @@ function processCurrentItem() {
         const video = findVideoElement();
         if (video) {
             clearInterval(mountChecker);
-            console.log("Video detected! Starting bulletproof video completion...");
+            console.log("Video detected! Waiting for video metadata to load...");
             completeVideoItem(video);
             return;
         }
@@ -185,37 +184,43 @@ function processCurrentItem() {
             return;
         }
 
-        // 4. Non-media skip page check after waiting 1.8s (6 attempts)
-        if (attempts >= 6 && !isVideoCandidateUrl && isExplicitSkipPageDOM()) {
+        // 4. NON-VIDEO PAGE FAST SKIP:
+        // ONLY trigger fast DOM skip if URL is NOT a video candidate URL (e.g. /quiz/, /assignment/)
+        if (!isVideoCandidateUrl && attempts >= 2 && isExplicitSkipPageDOM()) {
             clearInterval(mountChecker);
-            console.log("Non-media skip page confirmed. Skipping...");
+            console.log("Explicit non-video page detected in DOM. Skipping...");
             skipAssessmentOrDiscussion();
             return;
         }
 
-        // 5. TIMEOUT FALLBACK (9s): If no video/reading mounted after 30 attempts
+        // 5. DOM SKIP FOR ITEM URLS AFTER WAITING 2.1s (6 attempts):
+        // Ensures React has 2.1 seconds to insert <video> element before checking DOM skip
+        if (attempts >= 6 && isExplicitSkipPageDOM()) {
+            clearInterval(mountChecker);
+            console.log("Assessment/Exam/Quiz/Peer-Review DOM confirmed (no media after 2.1s). Skipping...");
+            skipAssessmentOrDiscussion();
+            return;
+        }
+
+        // 6. TIMEOUT FALLBACK (25 attempts ~8.7s):
+        // If after 8.7 seconds no media mounted
         if (attempts >= maxAttempts) {
             clearInterval(mountChecker);
-
-            if (isExplicitSkipUrl() || isExplicitSkipPageDOM()) {
-                console.log("Skip page confirmed after timeout. Skipping...");
-                skipAssessmentOrDiscussion();
-                return;
-            }
-
-            console.log("No media mounted after timeout. Attempting navigation...");
+            console.log("No media mounted after timeout. Attempting completion & navigation...");
             const markBtn = findMarkCompleteButton();
             if (markBtn) markBtn.click();
             setTimeout(() => {
                 if (settings.autoAdvance) clickNextButton();
             }, 300);
         }
-    }, 300);
+    }, 350);
 }
 
-// 1. BULLETPROOF VIDEO COMPLETION PIPELINE
+// 1. SMOOTH & RELIABLE VIDEO COMPLETION PIPELINE
 function completeVideoItem(video) {
     let loadAttempts = 0;
+    const maxLoadWait = 40; // Poll up to 12s (40 * 300ms) for video metadata (duration) to load
+
     const checkReady = setInterval(() => {
         loadAttempts++;
 
@@ -224,7 +229,7 @@ function completeVideoItem(video) {
         if (isReady && video.duration > 0) {
             clearInterval(checkReady);
 
-            console.log(`Video metadata ready (duration: ${video.duration.toFixed(1)}s). Starting progressive telemetry completion...`);
+            console.log(`Video loaded successfully! Duration: ${video.duration.toFixed(1)}s. Starting video completion & telemetry sync...`);
 
             video.muted = true;
             try {
@@ -235,8 +240,9 @@ function completeVideoItem(video) {
                 video.play().catch(() => {});
             }
 
-            // High-Speed Progressive Scrubbing: 20 steps at 20ms interval = ~400ms total scrub time
-            const steps = 20;
+            // Paced Progressive Scrubbing: 25 steps at 100ms interval = ~2.5s total scrub time
+            // Gives Coursera media player & browser engine time to record each timeline checkpoint
+            const steps = 25;
             const stepDuration = video.duration / steps;
             let currentStep = 0;
 
@@ -257,36 +263,52 @@ function completeVideoItem(video) {
                     clearInterval(scrubInterval);
 
                     try {
-                        video.currentTime = Math.max(0, video.duration - 0.2);
+                        video.currentTime = Math.max(0, video.duration - 0.1);
                         video.dispatchEvent(new Event("timeupdate", { bubbles: true }));
                         video.dispatchEvent(new Event("ended", { bubbles: true }));
                         video.dispatchEvent(new Event("pause", { bubbles: true }));
                     } catch (e) {}
 
-                    // Click Mark Complete if present
+                    // Click Mark Complete if present immediately
                     const markBtn = findMarkCompleteButton();
                     if (markBtn) {
-                        markBtn.click();
+                        try { markBtn.click(); } catch(e) {}
                     }
 
-                    // 400ms buffer for Coursera watch event XHR to resolve
+                    // 1200ms buffer to guarantee Coursera watch event XHR / GraphQL POST resolves to server
                     setTimeout(() => {
-                        console.log("Video completion done. Advancing to next item...");
-                        if (settings.autoAdvance) {
-                            clickNextButton();
-                        } else {
-                            setProcessingLock(false);
+                        // Double check Mark Complete button in case UI updated after ended event
+                        const markBtnAgain = findMarkCompleteButton();
+                        if (markBtnAgain) {
+                            try { markBtnAgain.click(); } catch(e) {}
                         }
-                    }, 400);
-                }
-            }, 20);
 
-        } else if (loadAttempts >= 30) {
+                        setTimeout(() => {
+                            console.log("Video completed & synced! Moving to next item...");
+                            if (settings.autoAdvance) {
+                                clickNextButton();
+                            } else {
+                                setProcessingLock(false);
+                            }
+                        }, 400);
+                    }, 1200);
+                }
+            }, 100);
+
+        } else if (loadAttempts >= maxLoadWait) {
             clearInterval(checkReady);
-            console.log("Video metadata load timeout. Retrying...");
-            setProcessingLock(false);
+            console.warn("Video element present but metadata load timed out (12s). Attempting completion fallback...");
+            const markBtn = findMarkCompleteButton();
+            if (markBtn) markBtn.click();
+            setTimeout(() => {
+                if (settings.autoAdvance) {
+                    clickNextButton();
+                } else {
+                    setProcessingLock(false);
+                }
+            }, 500);
         }
-    }, 250);
+    }, 300);
 }
 
 // 2. READING COMPLETION PIPELINE
@@ -300,7 +322,7 @@ function findReadingElement() {
 }
 
 function completeReadingItem(reading) {
-    console.log("Reading item detected. Fast Scroll & Mark Complete...");
+    console.log("Reading item detected. Scroll & Mark Complete...");
 
     try {
         if (reading.scrollHeight > reading.clientHeight) {
@@ -315,13 +337,14 @@ function completeReadingItem(reading) {
     document.querySelectorAll(".rc-ReadingCompletion button, [data-testid*='mark-complete']")
         .forEach(btn => { if (!btn.disabled && !isInsideSidebar(btn)) btn.click(); });
 
+    // 1000ms buffer to allow server sync before advancing
     setTimeout(() => {
         if (settings.autoAdvance) {
             clickNextButton();
         } else {
             setProcessingLock(false);
         }
-    }, 400);
+    }, 1000);
 }
 
 // 3. AUDIO COMPLETION PIPELINE
@@ -343,19 +366,20 @@ function completeAudioItem(audio) {
             const markBtn = findMarkCompleteButton();
             if (markBtn) markBtn.click();
 
+            // 1000ms buffer to allow server sync before advancing
             setTimeout(() => {
                 if (settings.autoAdvance) {
                     clickNextButton();
                 } else {
                     setProcessingLock(false);
                 }
-            }, 400);
+            }, 1000);
 
-        } else if (loadAttempts >= 15) {
+        } else if (loadAttempts >= 20) {
             clearInterval(checkReady);
             setProcessingLock(false);
         }
-    }, 250);
+    }, 300);
 }
 
 // MANUAL SKIP BUTTON HANDLER
@@ -540,9 +564,9 @@ function clickNextButton(retryCount = 0) {
         return true;
     }
 
-    // Retry up to 4 times (250ms intervals) in case Next button is rendering asynchronously
-    if (retryCount < 4) {
-        setTimeout(() => clickNextButton(retryCount + 1), 250);
+    // Retry up to 5 times (400ms intervals) in case Next button is rendering asynchronously
+    if (retryCount < 5) {
+        setTimeout(() => clickNextButton(retryCount + 1), 400);
         return true;
     }
 
@@ -554,9 +578,12 @@ function clickNextButton(retryCount = 0) {
 function isExplicitSkipUrl() {
     const path = location.pathname.toLowerCase();
     const skipPaths = [
-        "/discussionprompt/", "/discussions/", "/discussion/",
-        "/forum/", "/peer-review/", "/ungradedplugin/", "/plugin/",
-        "/assignment/", "/quiz/", "/exam/", "/gradedlti/", "/graded/"
+        "/discussionprompt/", "/discussions/", "/discussion/", "/forum/", "/prompt/",
+        "/peer-review/", "/peerreview/", "/peer_review/", "/peer/", "/review/",
+        "/ungradedplugin/", "/plugin/", "/assignment/", "/assignments/",
+        "/quiz/", "/quizzes/", "/exam/", "/exams/", "/assessment/", "/assessments/",
+        "/gradedlti/", "/graded/", "/ungradedlti/", "/lti/", "/widget/", "/ungradedwidget/",
+        "/practice-quiz/", "/practicequiz/", "/programming/", "/lab/", "/project/"
     ];
     for (const p of skipPaths) {
         if (path.includes(p)) return true;
@@ -568,20 +595,66 @@ function isExplicitSkipPageDOM() {
     const mainContent = document.querySelector("#rendered-content, main, .rc-ItemPage, body");
     if (!mainContent) return false;
 
-    // If a video element is present anywhere on the page, it is NOT a skip page
-    if (document.querySelector("video")) return false;
+    // If a video element or reading container is present, it is NOT a skip page
+    if (findVideoElement()) return false;
     if (findReadingElement()) return false;
+    const audio = document.querySelector("audio");
+    if (audio && !isInsideSidebar(audio)) return false;
 
+    // 1. Selectors for assignments, peer reviews, quizzes, exams, discussions
     const selectors = [
         ".rc-DiscussionPrompt",
         ".rc-Assignment",
         ".rc-Assessment",
         ".rc-PeerReview",
-        ".rc-Quiz"
+        ".rc-PeerSubmission",
+        ".rc-Quiz",
+        ".rc-Exam",
+        ".rc-UngradedWidget",
+        ".rc-LtiWidget",
+        ".rc-CmlItemPage",
+        "[data-testid*='quiz']",
+        "[data-testid*='assessment']",
+        "[data-testid*='peer-review']",
+        "[data-testid*='peer_review']",
+        "[data-testid*='assignment']",
+        "[data-testid*='discussion']",
+        "[data-testid*='exam']",
+        "[data-testid*='instructions']"
     ];
     for (const s of selectors) {
         const el = mainContent.querySelector(s);
         if (el && !isInsideSidebar(el)) return true;
+    }
+
+    // 2. Heading inspection
+    const headings = mainContent.querySelectorAll("h1, h2, h3, [data-testid='item-title'], .item-title");
+    for (const h of headings) {
+        if (isInsideSidebar(h)) continue;
+        const text = (h.innerText || "").toLowerCase();
+        if (
+            text.includes("quiz") || text.includes("exam") || text.includes("assignment") ||
+            text.includes("peer-graded") || text.includes("peer graded") || text.includes("peer review") ||
+            text.includes("discussion prompt") || text.includes("practice quiz") || text.includes("graded tool") ||
+            text.includes("graded assignment") || text.includes("honor code")
+        ) {
+            return true;
+        }
+    }
+
+    // 3. Action button inspection
+    const buttons = mainContent.querySelectorAll("button, a, div[role='button']");
+    for (const b of buttons) {
+        if (isInsideSidebar(b)) continue;
+        const text = (b.innerText || b.getAttribute("aria-label") || "").toLowerCase().trim();
+        if (
+            text.includes("start quiz") || text.includes("resume quiz") ||
+            text.includes("start assignment") || text.includes("submit assignment") ||
+            text.includes("submit your work") || text.includes("give feedback") ||
+            text.includes("my submission") || text.includes("start exam") || text.includes("agree and submit")
+        ) {
+            return true;
+        }
     }
 
     return false;
