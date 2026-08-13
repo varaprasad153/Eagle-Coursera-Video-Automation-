@@ -1,4 +1,4 @@
-// Coursera Auto Learner - Background Service Worker v5.0.0
+// Coursera Auto Learner - Background Service Worker v5.3.0
 console.log("⚡ Auto Learner background service worker active");
 
 // Listen for tab URL changes / completion

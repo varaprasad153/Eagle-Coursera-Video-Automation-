@@ -1,5 +1,5 @@
-// Coursera Auto Learner - Content Script v5.0.0 (Rock Solid Locked Pipeline)
-console.log("⚡ Coursera Auto Learner v5.0.0 active");
+// Coursera Auto Learner - Content Script v5.3.0 (Zero False-Skip & Bulletproof Pipeline)
+console.log("⚡ Coursera Auto Learner v5.3.0 active (Zero False-Skip)");
 
 // Overrides Page Visibility API so Coursera player believes window is ALWAYS visible
 try {
@@ -19,6 +19,22 @@ let settings = {
 
 let isProcessing = false;
 let currentUrl = location.href;
+let processingWatchdog = null;
+
+function setProcessingLock(val) {
+    isProcessing = val;
+    if (processingWatchdog) {
+        clearTimeout(processingWatchdog);
+        processingWatchdog = null;
+    }
+    if (val) {
+        // Auto-release lock after 20s as safety watchdog
+        processingWatchdog = setTimeout(() => {
+            console.warn("Processing lock watchdog expired (20s). Releasing lock.");
+            isProcessing = false;
+        }, 20000);
+    }
+}
 
 // Load settings from storage
 chrome.storage.local.get(
@@ -47,6 +63,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     if (request.action === "SKIP_VIDEO") {
+        setProcessingLock(false);
         const result = completeCurrentItemManual();
         sendResponse(result);
         return true;
@@ -67,11 +84,11 @@ function startMonitoring() {
         // Detect page URL navigation
         if (location.href !== currentUrl) {
             currentUrl = location.href;
-            isProcessing = false; // Unlock processing ONLY when page URL changes
+            setProcessingLock(false); // Unlock processing immediately when page URL changes
             console.log("Navigation detected to:", currentUrl);
 
             if (settings.enabled && settings.autoPilot) {
-                setTimeout(processCurrentItem, 1500);
+                setTimeout(processCurrentItem, 300); // Fast 300ms startup delay
             }
         } else {
             // Trigger processing if enabled and not currently processing
@@ -83,7 +100,7 @@ function startMonitoring() {
         if (settings.enabled) {
             handleInVideoPrompts();
         }
-    }, 1000);
+    }, 500);
 }
 
 // Helper: Ensure element is NOT inside the left sidebar navigation drawer
@@ -92,26 +109,60 @@ function isInsideSidebar(el) {
     return !!el.closest("nav, aside, .rc-ModuleNav, .rc-TreeNav, [data-testid='course-navigation'], [aria-label*='navigation'], .rc-NavigationDrawer, [role='navigation']");
 }
 
+// Helper: Find valid visible video element (including shadow DOM / iframe check)
+function findVideoElement() {
+    const videos = Array.from(document.querySelectorAll("video"));
+    for (const v of videos) {
+        if (v && !isInsideSidebar(v)) {
+            return v;
+        }
+    }
+
+    const iframes = Array.from(document.querySelectorAll("iframe"));
+    for (const frame of iframes) {
+        try {
+            const frameDoc = frame.contentDocument || frame.contentWindow?.document;
+            if (frameDoc) {
+                const frameVideo = frameDoc.querySelector("video");
+                if (frameVideo) return frameVideo;
+            }
+        } catch (e) {}
+    }
+
+    return null;
+}
+
 // Main execution function
 function processCurrentItem() {
     if (!settings.enabled || !settings.autoPilot || isProcessing) {
         return;
     }
 
-    isProcessing = true; // Lock processing until URL navigation completes
+    setProcessingLock(true);
     console.log("Processing page:", location.href);
 
+    const path = location.pathname.toLowerCase();
+    const isVideoCandidateUrl = path.includes("/lecture/") || path.includes("/item/") || path.includes("/video/") || path.includes("/supplement/");
+
+    // ONLY trigger instant skip on explicit assignment/discussion URL paths (e.g. /discussionprompt/ or /quiz/)
+    // NEVER trigger instant skip on video/lecture/item candidate URLs!
+    if (!isVideoCandidateUrl && isExplicitSkipUrl()) {
+        console.log("Instant skip triggered for explicit assignment/discussion URL...");
+        skipAssessmentOrDiscussion();
+        return;
+    }
+
     let attempts = 0;
-    const maxAttempts = 10; // Poll for up to 5 seconds for React components to mount
+    const maxAttempts = 30; // Poll up to 9s (30 * 300ms) for video/reading elements to mount in React
 
     const mountChecker = setInterval(() => {
         attempts++;
 
-        // 1. VIDEO ITEM: If <video> element exists, process video!
-        const video = document.querySelector("video");
+        // 1. VIDEO ITEM: If <video> element exists anywhere on page, process video!
+        const video = findVideoElement();
         if (video) {
             clearInterval(mountChecker);
-            console.log("Video detected! Starting video completion...");
+            console.log("Video detected! Starting bulletproof video completion...");
             completeVideoItem(video);
             return;
         }
@@ -127,95 +178,120 @@ function processCurrentItem() {
 
         // 3. AUDIO ITEM: If <audio> element exists, process audio!
         const audio = document.querySelector("audio");
-        if (audio) {
+        if (audio && !isInsideSidebar(audio)) {
             clearInterval(mountChecker);
             console.log("Audio detected! Starting audio completion...");
             completeAudioItem(audio);
             return;
         }
 
-        // 4. DISCUSSION / PLUGIN ITEM: If explicit discussion/plugin page, skip!
-        if (isExplicitSkipPage()) {
+        // 4. Non-media skip page check after waiting 1.8s (6 attempts)
+        if (attempts >= 6 && !isVideoCandidateUrl && isExplicitSkipPageDOM()) {
             clearInterval(mountChecker);
-            console.log("Discussion/Plugin page detected. Skipping...");
+            console.log("Non-media skip page confirmed. Skipping...");
             skipAssessmentOrDiscussion();
             return;
         }
 
-        // 5. TIMEOUT FALLBACK (5s): If no video/reading mounted after 5s
+        // 5. TIMEOUT FALLBACK (9s): If no video/reading mounted after 30 attempts
         if (attempts >= maxAttempts) {
             clearInterval(mountChecker);
-            console.log("No media mounted after 5s timeout. Attempting navigation...");
 
-            const markBtn = findMarkCompleteButton();
-            if (markBtn) {
-                markBtn.click();
-                setTimeout(() => {
-                    if (settings.autoAdvance) clickNextButton();
-                }, 1500);
+            if (isExplicitSkipUrl() || isExplicitSkipPageDOM()) {
+                console.log("Skip page confirmed after timeout. Skipping...");
+                skipAssessmentOrDiscussion();
                 return;
             }
 
-            clickNextButton();
+            console.log("No media mounted after timeout. Attempting navigation...");
+            const markBtn = findMarkCompleteButton();
+            if (markBtn) markBtn.click();
+            setTimeout(() => {
+                if (settings.autoAdvance) clickNextButton();
+            }, 300);
         }
-    }, 500);
+    }, 300);
 }
 
-// 1. VIDEO COMPLETION PIPELINE
+// 1. BULLETPROOF VIDEO COMPLETION PIPELINE
 function completeVideoItem(video) {
     let loadAttempts = 0;
     const checkReady = setInterval(() => {
         loadAttempts++;
 
-        if (video.duration > 0 && !isNaN(video.duration) && video.readyState >= 2) {
+        const isReady = (video.duration > 0 && !isNaN(video.duration)) || video.readyState >= 1;
+
+        if (isReady && video.duration > 0) {
             clearInterval(checkReady);
 
-            console.log(`Video ready (${video.duration}s). Seeking to last 2 seconds...`);
+            console.log(`Video metadata ready (duration: ${video.duration.toFixed(1)}s). Starting progressive telemetry completion...`);
 
             video.muted = true;
             try {
                 video.playbackRate = Math.min(Number(settings.playbackSpeed) || 16, 16);
             } catch (e) {}
 
-            // Fast-forward playhead to 2 seconds before end
-            video.currentTime = Math.max(0, video.duration - 2);
-            video.play().catch(e => {});
+            if (video.paused) {
+                video.play().catch(() => {});
+            }
 
-            let finished = false;
-            const onEnded = () => {
-                if (finished) return;
-                finished = true;
-                console.log("Video finished playing to end.");
+            // High-Speed Progressive Scrubbing: 20 steps at 20ms interval = ~400ms total scrub time
+            const steps = 20;
+            const stepDuration = video.duration / steps;
+            let currentStep = 0;
 
-                const markBtn = findMarkCompleteButton();
-                if (markBtn) markBtn.click();
+            const scrubInterval = setInterval(() => {
+                currentStep++;
+                const targetTime = Math.min(video.duration - 0.2, currentStep * stepDuration);
 
-                setTimeout(() => {
-                    if (settings.autoAdvance) {
-                        console.log("Advancing to next item...");
-                        clickNextButton();
+                try {
+                    video.currentTime = targetTime;
+                    video.dispatchEvent(new Event("timeupdate", { bubbles: true }));
+                    video.dispatchEvent(new Event("seeking", { bubbles: true }));
+                    video.dispatchEvent(new Event("seeked", { bubbles: true }));
+                } catch (e) {}
+
+                handleInVideoPrompts();
+
+                if (currentStep >= steps || targetTime >= video.duration - 0.5) {
+                    clearInterval(scrubInterval);
+
+                    try {
+                        video.currentTime = Math.max(0, video.duration - 0.2);
+                        video.dispatchEvent(new Event("timeupdate", { bubbles: true }));
+                        video.dispatchEvent(new Event("ended", { bubbles: true }));
+                        video.dispatchEvent(new Event("pause", { bubbles: true }));
+                    } catch (e) {}
+
+                    // Click Mark Complete if present
+                    const markBtn = findMarkCompleteButton();
+                    if (markBtn) {
+                        markBtn.click();
                     }
-                }, 1200);
-            };
 
-            video.addEventListener("ended", onEnded, { once: true });
+                    // 400ms buffer for Coursera watch event XHR to resolve
+                    setTimeout(() => {
+                        console.log("Video completion done. Advancing to next item...");
+                        if (settings.autoAdvance) {
+                            clickNextButton();
+                        } else {
+                            setProcessingLock(false);
+                        }
+                    }, 400);
+                }
+            }, 20);
 
-            // Fallback safety timer if ended event does not fire
-            setTimeout(() => {
-                if (!finished) onEnded();
-            }, 3500);
-
-        } else if (loadAttempts >= 20) {
+        } else if (loadAttempts >= 30) {
             clearInterval(checkReady);
-            console.log("Video load timeout. Retrying...");
-            isProcessing = false;
+            console.log("Video metadata load timeout. Retrying...");
+            setProcessingLock(false);
         }
-    }, 500);
+    }, 250);
 }
 
 // 2. READING COMPLETION PIPELINE
 function findReadingElement() {
-    const selectors = [".rc-Reading", ".reading-body", ".reading-content", "[data-testid*='reading']", ".cml-article"];
+    const selectors = [".rc-Reading", ".reading-body", ".reading-content", "[data-testid*='reading']", ".cml-article", ".rc-ReadingItem"];
     for (const sel of selectors) {
         const el = document.querySelector(sel);
         if (el && el.innerText && el.innerText.length > 30 && !isInsideSidebar(el)) return el;
@@ -224,7 +300,7 @@ function findReadingElement() {
 }
 
 function completeReadingItem(reading) {
-    console.log("Reading item detected. Scroll & Mark Complete...");
+    console.log("Reading item detected. Fast Scroll & Mark Complete...");
 
     try {
         if (reading.scrollHeight > reading.clientHeight) {
@@ -233,19 +309,19 @@ function completeReadingItem(reading) {
         window.scrollTo(0, document.body.scrollHeight);
     } catch (e) {}
 
+    const markBtn = findMarkCompleteButton();
+    if (markBtn) markBtn.click();
+
+    document.querySelectorAll(".rc-ReadingCompletion button, [data-testid*='mark-complete']")
+        .forEach(btn => { if (!btn.disabled && !isInsideSidebar(btn)) btn.click(); });
+
     setTimeout(() => {
-        const markBtn = findMarkCompleteButton();
-        if (markBtn) markBtn.click();
-
-        document.querySelectorAll(".rc-ReadingCompletion button, [data-testid*='mark-complete']")
-            .forEach(btn => { if (!btn.disabled && !isInsideSidebar(btn)) btn.click(); });
-
-        setTimeout(() => {
-            if (settings.autoAdvance) {
-                clickNextButton();
-            }
-        }, 1200);
-    }, 1000);
+        if (settings.autoAdvance) {
+            clickNextButton();
+        } else {
+            setProcessingLock(false);
+        }
+    }, 400);
 }
 
 // 3. AUDIO COMPLETION PIPELINE
@@ -254,40 +330,37 @@ function completeAudioItem(audio) {
     const checkReady = setInterval(() => {
         loadAttempts++;
 
-        if (audio.duration > 0 && !isNaN(audio.duration) && audio.readyState >= 2) {
+        if (audio.duration > 0 && !isNaN(audio.duration) && audio.readyState >= 1) {
             clearInterval(checkReady);
 
             audio.muted = true;
-            audio.currentTime = Math.max(0, audio.duration - 2);
-            audio.play().catch(e => {});
+            audio.currentTime = Math.max(0, audio.duration - 1);
+            try {
+                audio.dispatchEvent(new Event("timeupdate", { bubbles: true }));
+                audio.dispatchEvent(new Event("ended", { bubbles: true }));
+            } catch (e) {}
 
-            let finished = false;
-            const onEnded = () => {
-                if (finished) return;
-                finished = true;
-                console.log("Audio finished.");
+            const markBtn = findMarkCompleteButton();
+            if (markBtn) markBtn.click();
 
-                const markBtn = findMarkCompleteButton();
-                if (markBtn) markBtn.click();
-
-                setTimeout(() => {
-                    if (settings.autoAdvance) clickNextButton();
-                }, 1200);
-            };
-
-            audio.addEventListener("ended", onEnded, { once: true });
-            setTimeout(onEnded, 3500);
+            setTimeout(() => {
+                if (settings.autoAdvance) {
+                    clickNextButton();
+                } else {
+                    setProcessingLock(false);
+                }
+            }, 400);
 
         } else if (loadAttempts >= 15) {
             clearInterval(checkReady);
-            isProcessing = false;
+            setProcessingLock(false);
         }
-    }, 500);
+    }, 250);
 }
 
 // MANUAL SKIP BUTTON HANDLER
 function completeCurrentItemManual() {
-    const video = document.querySelector("video");
+    const video = findVideoElement();
     if (video) {
         completeVideoItem(video);
         return { success: true, status: "Video completing & advancing..." };
@@ -300,12 +373,12 @@ function completeCurrentItemManual() {
     }
 
     const audio = document.querySelector("audio");
-    if (audio) {
+    if (audio && !isInsideSidebar(audio)) {
         completeAudioItem(audio);
         return { success: true, status: "Audio completing & advancing..." };
     }
 
-    if (isExplicitSkipPage()) {
+    if (isExplicitSkipUrl() || isExplicitSkipPageDOM()) {
         skipAssessmentOrDiscussion();
         return { success: true, status: "Skipped assignment/discussion" };
     }
@@ -313,7 +386,7 @@ function completeCurrentItemManual() {
     const markBtn = findMarkCompleteButton();
     if (markBtn) {
         markBtn.click();
-        setTimeout(() => { if (settings.autoAdvance) clickNextButton(); }, 1000);
+        setTimeout(() => { if (settings.autoAdvance) clickNextButton(); }, 300);
         return { success: true, status: "Marked complete" };
     }
 
@@ -330,6 +403,7 @@ function findMarkCompleteButton() {
         "button[aria-label*='Mark as complete']",
         "button[aria-label*='Mark complete']",
         "button[data-testid*='mark-complete']",
+        "button[data-testid*='mark-as-complete']",
         ".rc-ReadingCompletion button",
         ".rc-VideoCompletion button"
     ];
@@ -360,12 +434,13 @@ function findNextButton() {
         "a[aria-label*='Next item']",
         "button[aria-label*='next item']",
         "a[aria-label*='next item']",
+        "button[aria-label*='Next']",
+        "a[aria-label*='Next']",
         "button[data-testid*='next']",
         "a[data-testid*='next']",
         ".rc-ItemNav button",
-        "button[aria-label='Next']",
-        "a[aria-label='Next']",
-        "a.next-item-btn"
+        "a.next-item-btn",
+        "[data-track-component='next_item_button']"
     ];
     for (const sel of selectors) {
         const elements = document.querySelectorAll(sel);
@@ -451,7 +526,7 @@ function clickNextItemFromSidebar() {
     return false;
 }
 
-function clickNextButton() {
+function clickNextButton(retryCount = 0) {
     let btn = findNextButton();
     if (!btn) btn = findNextModuleButton();
 
@@ -461,31 +536,48 @@ function clickNextButton() {
         return true;
     }
 
-    console.log("Main Next button not found. Trying sidebar next item link...");
     if (clickNextItemFromSidebar()) {
         return true;
     }
 
-    console.log("No next button or sidebar link found.");
+    // Retry up to 4 times (250ms intervals) in case Next button is rendering asynchronously
+    if (retryCount < 4) {
+        setTimeout(() => clickNextButton(retryCount + 1), 250);
+        return true;
+    }
+
+    console.log("No next button or sidebar link found after retries.");
+    setProcessingLock(false);
     return false;
 }
 
-function isExplicitSkipPage() {
+function isExplicitSkipUrl() {
     const path = location.pathname.toLowerCase();
     const skipPaths = [
         "/discussionprompt/", "/discussions/", "/discussion/",
-        "/forum/", "/peer-review/", "/ungradedplugin/", "/plugin/"
+        "/forum/", "/peer-review/", "/ungradedplugin/", "/plugin/",
+        "/assignment/", "/quiz/", "/exam/", "/gradedlti/", "/graded/"
     ];
     for (const p of skipPaths) {
         if (path.includes(p)) return true;
     }
+    return false;
+}
 
-    const mainContent = document.querySelector(".rc-ItemContent, #rendered-content, .rc-ItemPage, main") || document.body;
+function isExplicitSkipPageDOM() {
+    const mainContent = document.querySelector("#rendered-content, main, .rc-ItemPage, body");
+    if (!mainContent) return false;
+
+    // If a video element is present anywhere on the page, it is NOT a skip page
+    if (document.querySelector("video")) return false;
+    if (findReadingElement()) return false;
+
     const selectors = [
         ".rc-DiscussionPrompt",
         ".rc-Assignment",
         ".rc-Assessment",
-        "[data-testid*='discussion']"
+        ".rc-PeerReview",
+        ".rc-Quiz"
     ];
     for (const s of selectors) {
         const el = mainContent.querySelector(s);
@@ -501,9 +593,9 @@ function skipAssessmentOrDiscussion() {
         try { markBtn.click(); } catch(e) {}
     }
 
-    setTimeout(() => {
-        if (clickNextButton()) return;
+    if (clickNextButton()) return;
 
+    setTimeout(() => {
         const btns = document.querySelectorAll("button, a, div[role='button']");
         for (const b of btns) {
             if (isInsideSidebar(b)) continue;
@@ -515,17 +607,36 @@ function skipAssessmentOrDiscussion() {
                 }
             }
         }
-    }, 600);
+        setProcessingLock(false);
+    }, 200);
 }
 
 function handleInVideoPrompts() {
-    const promptSelectors = [".rc-VideoQuizModal", "[data-testid='in-video-quiz-modal']", ".rc-InVideoQuiz"];
+    const promptSelectors = [
+        ".rc-VideoQuizModal",
+        "[data-testid='in-video-quiz-modal']",
+        ".rc-InVideoQuiz",
+        ".rc-QuizPrompt",
+        ".rc-VideoPrompt"
+    ];
     for (const sel of promptSelectors) {
-        if (document.querySelector(sel)) {
-            const btn = document.querySelector(`${sel} button`);
-            if (btn && !btn.disabled && !isInsideSidebar(btn)) {
-                btn.click();
-                console.log("Dismissed in-video prompt");
+        const container = document.querySelector(sel);
+        if (container) {
+            const btns = container.querySelectorAll("button");
+            for (const btn of btns) {
+                if (btn && !btn.disabled && !isInsideSidebar(btn)) {
+                    const text = (btn.innerText || btn.getAttribute("aria-label") || "").toLowerCase();
+                    if (text.includes("submit") || text.includes("continue") || text.includes("skip") || text.includes("resume") || text.includes("dismiss") || text.includes("next")) {
+                        btn.click();
+                        console.log("Dismissed in-video prompt:", text);
+                        return;
+                    }
+                }
+            }
+            const firstBtn = container.querySelector("button");
+            if (firstBtn && !firstBtn.disabled && !isInsideSidebar(firstBtn)) {
+                firstBtn.click();
+                console.log("Dismissed in-video prompt (fallback button click)");
             }
         }
     }

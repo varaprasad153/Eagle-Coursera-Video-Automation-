@@ -6,7 +6,7 @@
 
 ## ✨ Features
 
-- **Automated Video Fast-Forwarding**: Loads video streams, fast-forwards to the final 2 seconds, plays through to the end, and marks videos complete.
+- **Automated Video Fast-Forwarding & Telemetry Sync**: Performs high-speed progressive watching telemetry (20 timeline checkpoints) so Coursera servers grant 100% completion credit, and marks videos complete.
 - **Auto Reading Completion**: Automatically scrolls reading assignments to the bottom and clicks *Mark as Complete*.
 - **Auto Audio Playback**: Fast-forwards audio lessons and marks them finished.
 - **Auto-Advance to Next Item**: Moves seamlessly from one lesson to the next.
